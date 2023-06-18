@@ -11,11 +11,13 @@ import kotlinx.serialization.serializer
 import org.tensorflow.lite.Interpreter
 import org.tensorflow.lite.support.common.FileUtil
 import java.io.IOException
+import java.nio.Buffer
+import java.nio.ByteBuffer
 import java.nio.FloatBuffer
 import java.nio.charset.Charset
 import kotlin.reflect.KClass
-import kotlin.reflect.KMutableProperty
 import kotlin.reflect.full.declaredMemberProperties
+import kotlin.reflect.jvm.jvmName
 
 interface TrainData {
 }
@@ -28,64 +30,92 @@ abstract class TrainingTask<T : TrainData>(
 ) {
     lateinit var trainData: T
     private lateinit var interpreter: Interpreter
+    protected var block: ((Int, Int, Map<String, Any>) -> MutableMap<String, Any>)? = null
     abstract val TAG: String
     abstract val typeOfTrainData: KClass<T>
-
-
-    open fun setupModel(context: Context, modelFileName: String = "model.tflite",dataFileName: String = "data.json"){
+    abstract val isLazy: Boolean
+    open val inputDimension:List<IntArray> = listOf()
+    open val trainSignature: String = "train"
+    open fun setupModel(
+        context: Context,
+        modelFileName: String = "model.tflite",
+        dataFileName: String = "data.json"
+    ) {
         val options = Interpreter.Options().apply { numThreads = 4 }
         try {
             val modelFile = FileUtil.loadMappedFile(context, modelFileName)
             interpreter = Interpreter(modelFile, options)
             log("TFLite $modelFileName model loaded successfully")
-            getTrainData(context,dataFileName)
+            getTrainData(context, dataFileName)
         } catch (e: IOException) {
             Log.e(TAG, "TFLite failed to load model with error: " + e.message)
         }
     }
 
     open fun startTrain() {
-        log("${dataSize / batchSize} $dataSize $batchSize ${dataSize.floorDiv(batchSize)}")
-        val batches: MutableList<MutableMap<String,Any>> = mutableListOf()
-        for (i in 1..dataSize.floorDiv(batchSize)) {
-            val batch = mutableMapOf<String,Any>()
-            trainData::class.declaredMemberProperties.forEach {
-                val value = it.getter.call(trainData)
-                if (value is IntArray) {
-                    val batchValue = IntArray(batchSize)
-                    for (j in 0 until batchSize) {
-                        batchValue[j] = value[(i - 1) * batchSize + j]
-                    }
-                    batch[it.name] = batchValue
-                } else if (value is List<*>) {
-                    val batchValue = mutableListOf<Any>()
-                    batchValue.addAll(listOf(value.subList((i - 1) * batchSize, i * batchSize)))
-                    batch[it.name] = batchValue
-                }
+        if (!this::trainData.isInitialized) {
+            if (isLazy)
+                log("No TrainData! Use Callback to supply.")
+            else {
+                Log.e(TAG, "No TrainData!")
+                return
             }
-            batches.add(batch)
+        }
+        log("${dataSize / batchSize} $dataSize $batchSize ${dataSize.floorDiv(batchSize)}")
+        val batches: MutableList<MutableMap<String, Any>> = mutableListOf()
+        for (i in 1..dataSize.floorDiv(batchSize)) {
+            if (!isLazy) {
+                val batch = mutableMapOf<String, Any>()
+                trainData::class.declaredMemberProperties.forEach {
+                    val value = it.getter.call(trainData)
+                    if (value is IntArray) {
+                        val batchValue = IntArray(batchSize)
+                        for (j in 0 until batchSize) {
+                            batchValue[j] = value[(i - 1) * batchSize + j]
+                        }
+                        batch[it.name] = batchValue
+                    } else if (value is List<*>) {
+                        val batchValue = mutableListOf<Any>()
+                        batchValue.addAll(listOf(value.subList((i - 1) * batchSize, i * batchSize)))
+                        batch[it.name] = batchValue
+                    }
+                }
+                batches.add(supplyData(batchSize, i, batch))
+            } else
+                batches.add(supplyData(batchSize, i))
         }
         log(batches)
-        GlobalScope.launch(Dispatchers.Default){
+        GlobalScope.launch(Dispatchers.Default) {
             val timeComsumed = mutableListOf<Long>()
-            for (batch in batches){
-                val inputs = batch
+            for (batch in batches) {
                 val outputs = mutableMapOf<String, Any>()
                 val loss = FloatBuffer.allocate(1)
                 outputs["loss"] = loss
+                println(batch)
+                if (batch.any {
+                        println(it.value.javaClass.isArray)
+                        return@any !it.value.javaClass.isArray}){
+                    Log.i(TAG,"Find Buffer  reallocate the buffer")
+                    inputDimension.forEachIndexed { index, ints ->
+
+                        interpreter.resizeInput(index, ints)
+                    }
+                    interpreter.allocateTensors()
+                    Log.i(TAG,"Buffer reallocated ${interpreter.getInputTensor(1).shapeSignature().joinToString()}")
+                }
                 val startTime = System.currentTimeMillis()
-                interpreter.runSignature(inputs, outputs, "train")
+                interpreter.runSignature(batch, outputs, trainSignature)
                 val endTime = System.currentTimeMillis()
-                Log.i(TAG,"loss: ${loss.array()[0]}")
-                Log.i(TAG,"Time Consumed: ${endTime-startTime}ms")
-                timeComsumed.add(endTime-startTime)
+                Log.i(TAG, "loss: ${loss.array()[0]}")
+                Log.i(TAG, "Time Consumed: ${endTime - startTime}ms")
+                timeComsumed.add(endTime - startTime)
             }
-            if (timeComsumed.size < 3){
-                Log.i(TAG,"Too few runs!")
+            if (timeComsumed.size < 3) {
+                Log.i(TAG, "Too few runs!")
                 return@launch
             }
             timeComsumed.removeAt(0)
-            Log.i(TAG,"Average Time Consumed: ${timeComsumed.average()}ms")
+            Log.i(TAG, "Average Time Consumed: ${timeComsumed.average()}ms")
         }
 
     }
@@ -93,6 +123,7 @@ abstract class TrainingTask<T : TrainData>(
 
     @OptIn(InternalSerializationApi::class)
     open fun getTrainData(context: Context, dataFileName: String = "data.json") {
+        if (dataFileName.isEmpty()) return
         try {
             val trainFile = context.assets.open(dataFileName)
             val size = trainFile.available()
@@ -127,8 +158,22 @@ abstract class TrainingTask<T : TrainData>(
 
     }
 
-    public open fun modifyData(block: (T) -> Unit = {}) {
+    open fun modifyData(block: (T) -> Unit = {}) {
         block(trainData)
+    }
+
+    open fun registerDataSupplier(block: ((Int, Int, Map<String, Any>) -> MutableMap<String, Any>)? = null) {
+        this.block = block
+    }
+
+    open fun supplyData(
+        batchSize: Int,
+        batchIndex: Int,
+        mapInfo: MutableMap<String, Any> = mutableMapOf()
+    ): MutableMap<String, Any> {
+        if (block == null) Log.e(TAG, "No Data Supply Func!")
+        return block?.invoke(batchSize, batchIndex, mapInfo)
+            ?: if (isLazy) mutableMapOf() else mapInfo
     }
 
     open fun log(vararg messages: Any) {
