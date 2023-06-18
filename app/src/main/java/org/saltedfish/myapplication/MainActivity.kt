@@ -17,6 +17,7 @@ import kotlinx.coroutines.GlobalScope
 import kotlinx.coroutines.launch
 import kotlinx.serialization.json.Json
 import org.json.JSONObject
+import org.saltedfish.myapplication.TrainingTasks.Resnet
 import org.saltedfish.myapplication.ui.theme.MyApplicationTheme
 import org.tensorflow.lite.Interpreter
 import org.tensorflow.lite.support.common.FileUtil
@@ -32,76 +33,13 @@ class MainActivity : ComponentActivity() {
     val TAG = "TFLite App"
     private lateinit var interpreter: Interpreter
     lateinit  var trainData:TrainData
-    private fun setupModelPersonalization(context: Context): Boolean {
-        val options = Interpreter.Options()
-        options.numThreads = 4
-        return try {
-            try {
-                val  trainFile= assets.open("tokenizer.json")
-                val size = trainFile.available()
-                val buffer = ByteArray(size)
-                trainFile.read(buffer)
-                trainFile.close()
-                val json = String(buffer, Charset.defaultCharset())
-                trainData = Json.decodeFromString<TrainData>(json)
-                Log.i(TAG, "TFLite Data loaded successfully")
-                Log.i(TAG,trainData.train_sentiments.size.toString())
 
-            } catch (ex: IOException) {
-                ex.printStackTrace()
-            }
-            val modelFile = FileUtil.loadMappedFile(context, "model.tflite")
-            interpreter = Interpreter(modelFile, options)
-            true
-        } catch (e: IOException) {
-            Log.e(TAG, "TFLite failed to load model with error: " + e.message)
-            false
-        }
-    }
-    private fun startTrain(){
-        val Batches:MutableList<TrainData> = mutableListOf()
-        Log.i(TAG,"${DATASIZE/BATCHSIZE} $DATASIZE $BATCHSIZE ${DATASIZE.floorDiv(BATCHSIZE)}")
-        for (i in 1 ..DATASIZE.floorDiv(BATCHSIZE)){
-//        for (i in 1 ..5){
-            val trainBatch = TrainData(
-                trainData.train_features_ids.subList((i-1)*BATCHSIZE,i*BATCHSIZE),
-                trainData.train_features_masks.subList((i-1)*BATCHSIZE,i*BATCHSIZE),
-                if (!trainData.train_features_segments.isEmpty()) trainData.train_features_segments.subList((i-1)*BATCHSIZE,i*BATCHSIZE) else listOf(),
-                trainData.train_sentiments.subList((i-1)*BATCHSIZE,i*BATCHSIZE)
-            )
-            Batches.add(trainBatch)
-        }
-        Log.i(TAG,Batches.size.toString())
 
-        GlobalScope.launch(Dispatchers.Default){
-            val timeComsumed = mutableListOf<Long>()
-            for (batch in Batches){
-                val inputFeature0 = batch.train_features_ids.toTypedArray()
-                val inputFeature1 = batch.train_features_masks.toTypedArray()
-                val inputFeature2 = batch.train_features_segments.toTypedArray()
-                val inputFeature3 = batch.train_sentiments.toIntArray()
-//                val inputs = mapOf<String,Any>(Pair("input_word_ids",inputFeature0),Pair("input_mask",inputFeature1),Pair("input_type_ids",inputFeature2),Pair("y",inputFeature3))
-                val inputs = mapOf<String,Any>(Pair("bert_input_ids",inputFeature0),Pair("bert_input_masks",inputFeature1),Pair("y",inputFeature3))
-
-                val outputs: MutableMap<String, Any> = HashMap()
-                val loss = FloatBuffer.allocate(1)
-                outputs["loss"] = loss
-//                Calc Time Consumed
-                val startTime = System.currentTimeMillis()
-                interpreter.runSignature(inputs, outputs, "train")
-                val endTime = System.currentTimeMillis()
-                Log.i(TAG,"loss: ${loss.array()[0]}")
-                Log.i(TAG,"Time Consumed: ${endTime-startTime}ms")
-                timeComsumed.add(endTime-startTime)
-            }
-            timeComsumed.removeAt(0)
-            Log.i(TAG,"Average Time Consumed: ${timeComsumed.average()}ms")
-        }
-    }
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        setupModelPersonalization(this)
-        startTrain()
+        val resnet = Resnet(batchSize = BATCHSIZE, dataSize = DATASIZE)
+        resnet.setupModel(this)
+        resnet.startTrain()
         setContent {
             MyApplicationTheme {
                 // A surface container using the 'background' color from the theme
