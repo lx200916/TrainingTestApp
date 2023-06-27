@@ -8,21 +8,16 @@ import kotlinx.coroutines.launch
 import kotlinx.serialization.InternalSerializationApi
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.serializer
+import org.saltedfish.trainingdatahelper.TrainData
+import org.saltedfish.trainingdatahelper.TrainingDataHelper
+import org.saltedfish.trainingdatahelper.gen.getHelper
 import org.tensorflow.lite.Interpreter
 import org.tensorflow.lite.support.common.FileUtil
 import java.io.IOException
-import java.nio.Buffer
-import java.nio.ByteBuffer
 import java.nio.FloatBuffer
 import java.nio.charset.Charset
 import kotlin.reflect.KClass
 import kotlin.reflect.full.declaredMemberProperties
-import kotlin.reflect.jvm.jvmName
-
-interface TrainData {
-}
-
-
 abstract class TrainingTask<T : TrainData>(
     var batchSize: Int = 1,
     var dataSize: Int = 1,
@@ -62,46 +57,31 @@ abstract class TrainingTask<T : TrainData>(
             }
         }
         log("${dataSize / batchSize} $dataSize $batchSize ${dataSize.floorDiv(batchSize)}")
-        val batches: MutableList<MutableMap<String, Any>> = mutableListOf()
-        for (i in 1..dataSize.floorDiv(batchSize)) {
-            if (!isLazy) {
-                val batch = mutableMapOf<String, Any>()
-                trainData::class.declaredMemberProperties.forEach {
-                    val value = it.getter.call(trainData)
-                    if (value is IntArray) {
-                        val batchValue = IntArray(batchSize)
-                        for (j in 0 until batchSize) {
-                            batchValue[j] = value[(i - 1) * batchSize + j]
-                        }
-                        batch[it.name] = batchValue
-                    } else if (value is List<*>) {
-                        val batchValue = mutableListOf<Any>()
-                        batchValue.addAll(listOf(value.subList((i - 1) * batchSize, i * batchSize)))
-                        batch[it.name] = batchValue
-                    }
-                }
-                batches.add(supplyData(batchSize, i, batch))
-            } else
-                batches.add(supplyData(batchSize, i))
-        }
-        log(batches)
+
         GlobalScope.launch(Dispatchers.Default) {
             val timeComsumed = mutableListOf<Long>()
-            for (batch in batches) {
+            for (i in 1..dataSize.floorDiv(batchSize)) {
+                var batch = mutableMapOf<String, Any>()
+                batch = if (!isLazy) {
+                   batch = TrainingDataHelper<T>().getHelper(typeOfTrainData)?.batchTrainData(
+                       trainData,batchSize, i-1
+                   )?:batch
+                    Log.i(TAG,"Batch: ${batch.size}")
+                    supplyData(batchSize, i, batch)
+                } else
+                    supplyData(batchSize, i)
                 val outputs = mutableMapOf<String, Any>()
                 val loss = FloatBuffer.allocate(1)
                 outputs["loss"] = loss
                 println(batch)
                 if (batch.any {
-                        println(it.value.javaClass.isArray)
-                        return@any !it.value.javaClass.isArray}){
+                        return@any !it.value.javaClass.isArray&&!it.value.javaClass.name.contains("ist")}){
                     Log.i(TAG,"Find Buffer  reallocate the buffer")
                     inputDimension.forEachIndexed { index, ints ->
-
                         interpreter.resizeInput(index, ints)
                     }
                     interpreter.allocateTensors()
-                    Log.i(TAG,"Buffer reallocated ${interpreter.getInputTensor(1).shapeSignature().joinToString()}")
+//                    Log.i(TAG,"Buffer reallocated ${interpreter.getInputTensor(1).shapeSignature().joinToString()}")
                 }
                 val startTime = System.currentTimeMillis()
                 interpreter.runSignature(batch, outputs, trainSignature)

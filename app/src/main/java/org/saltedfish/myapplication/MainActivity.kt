@@ -18,6 +18,8 @@ import kotlinx.coroutines.GlobalScope
 import kotlinx.coroutines.launch
 import kotlinx.serialization.json.Json
 import org.json.JSONObject
+import org.saltedfish.myapplication.TrainingTasks.BertTrainData
+import org.saltedfish.myapplication.TrainingTasks.DistilbertTrainingTask
 import org.saltedfish.myapplication.TrainingTasks.Resnet
 import org.saltedfish.myapplication.ui.theme.MyApplicationTheme
 import org.tensorflow.lite.DataType
@@ -38,6 +40,8 @@ const val DATASIZE = 40
 class MainActivity : ComponentActivity() {
     val TAG = "TFLite App"
     lateinit var assetsList: List<String>
+    private lateinit var interpreter: Interpreter
+    lateinit  var trainData:BertTrainData
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         val resnet = Resnet(batchSize = BATCHSIZE, dataSize = DATASIZE)
@@ -61,7 +65,12 @@ class MainActivity : ComponentActivity() {
             mutableMapOf(Pair("x",bb),Pair("y", Collections.nCopies(8,Collections.nCopies(10,1f).toFloatArray()).toTypedArray()))
          }
         resnet.startTrain()
+        val bert = DistilbertTrainingTask(batchSize = BATCHSIZE, dataSize = DATASIZE)
+        bert.setupModel(this, dataFileName = "tokenizer.json", modelFileName = "distilbert_sst_seq_128.tflite")
+        bert.startTrain()
+
         setContent {
+
             MyApplicationTheme {
                 // A surface container using the 'background' color from the theme
                 Surface(
