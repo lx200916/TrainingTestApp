@@ -60,13 +60,13 @@ abstract class TrainingTask<T : TrainData>(
 
         GlobalScope.launch(Dispatchers.Default) {
             val timeComsumed = mutableListOf<Long>()
-            for (i in 1..dataSize.floorDiv(batchSize)) {
+            for (i in 1..2) {
                 var batch = mutableMapOf<String, Any>()
                 batch = if (!isLazy) {
                    batch = TrainingDataHelper<T>().getHelper(typeOfTrainData)?.batchTrainData(
                        trainData,batchSize, i-1
                    )?:batch
-                    Log.i(TAG,"Batch: ${batch.size}")
+//                    Log.i(TAG,"Batch: ${batch.size}")
                     supplyData(batchSize, i, batch)
                 } else
                     supplyData(batchSize, i)
